@@ -192,11 +192,13 @@ func parseProxyCommand(cmd, host, port, user string) string {
 
 // proxyConn implements net.Conn for ProxyCommand
 type proxyConn struct {
-	cmd    *exec.Cmd
-	stdin  io.WriteCloser
-	stdout io.Reader
-	local  net.Addr
-	remote net.Addr
+	cmd      *exec.Cmd
+	stdin    io.WriteCloser
+	stdout   io.Reader
+	stderr   io.ReadCloser
+	done     chan struct{}
+	local    net.Addr
+	remote   net.Addr
 }
 
 func newProxyConn(cmd *exec.Cmd, stdin io.WriteCloser, stdout io.Reader) *proxyConn {
@@ -204,6 +206,7 @@ func newProxyConn(cmd *exec.Cmd, stdin io.WriteCloser, stdout io.Reader) *proxyC
 		cmd:    cmd,
 		stdin:  stdin,
 		stdout: stdout,
+		done:   make(chan struct{}),
 		local:  &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0},
 		remote: &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0},
 	}
@@ -218,13 +221,26 @@ func (p *proxyConn) Write(b []byte) (n int, err error) {
 }
 
 func (p *proxyConn) Close() error {
+	// Close stdin first
 	if p.stdin != nil {
 		p.stdin.Close()
 	}
-	if p.cmd.Process != nil {
-		p.cmd.Process.Kill()
+
+	// Wait for the command to exit or timeout
+	select {
+	case <-p.done:
+	case <-time.After(5 * time.Second):
+		// Force kill if still running
+		if p.cmd.Process != nil {
+			p.cmd.Process.Kill()
+		}
 	}
-	p.cmd.Wait()
+
+	// Wait for the process
+	if p.cmd.Process != nil {
+		p.cmd.Wait()
+	}
+
 	return nil
 }
 
@@ -281,7 +297,7 @@ func (c *Client) Connect() error {
 		log.Printf("ProxyCommand started (PID: %d)", cmd.Process.Pid)
 
 		// Give proxy time to establish connection
-		time.Sleep(1 * time.Second)
+		time.Sleep(500 * time.Millisecond)
 
 		// Check if process is still running
 		if cmd.ProcessState != nil && cmd.ProcessState.Exited() {
@@ -290,6 +306,19 @@ func (c *Client) Connect() error {
 
 		c.proxyConn = newProxyConn(cmd, stdinPipe, stdoutPipe)
 		conn = c.proxyConn
+
+		// Start a goroutine to keep reading from stdout to prevent EOF
+		outPipe := stdoutPipe
+		go func() {
+			buf := make([]byte, 4096)
+			for {
+				_, err := outPipe.Read(buf)
+				if err != nil {
+					break
+				}
+				// Optionally log or discard
+			}
+		}()
 
 		log.Printf("ProxyCommand ready")
 	} else {
