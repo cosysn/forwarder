@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
@@ -15,6 +16,47 @@ type Listener struct {
 	addr       string
 	localPort  int
 	socketPath string
+}
+
+// findSSHBinary finds the ssh executable path on Windows
+func findSSHBinary() string {
+	// Check SSH_CLIENT_SSH environment variable
+	if sshPath := os.Getenv("SSH_CLIENT_SSH"); sshPath != "" {
+		return sshPath
+	}
+
+	// Try Windows OpenSSH
+	paths := []string{
+		filepath.Join(os.Getenv("SystemRoot"), "System32", "OpenSSH", "ssh.exe"),
+		filepath.Join(os.Getenv("ProgramFiles"), "OpenSSH", "ssh.exe"),
+		filepath.Join(os.Getenv("ProgramFiles(x86)"), "OpenSSH", "ssh.exe"),
+		"C:\\Windows\\System32\\OpenSSH\\ssh.exe",
+	}
+
+	for _, p := range paths {
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+
+	// Try Git for Windows SSH
+	gitPaths := []string{
+		filepath.Join(os.Getenv("ProgramFiles"), "Git", "usr", "bin", "ssh.exe"),
+		filepath.Join(os.Getenv("ProgramFiles(x86)"), "Git", "usr", "bin", "ssh.exe"),
+	}
+
+	for _, p := range gitPaths {
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+
+	// Fall back to PATH lookup
+	path, err := exec.LookPath("ssh.exe")
+	if err != nil {
+		log.Fatalf("ssh.exe not found in PATH: %v", err)
+	}
+	return path
 }
 
 func New(localIP string, localPort int, socketPath string) *Listener {
@@ -27,15 +69,13 @@ func New(localIP string, localPort int, socketPath string) *Listener {
 
 func (l *Listener) Start() error {
 	// Create SSH tunnel: ssh -N -L <localPort>:localhost:22 <remote>
-	// This creates a listener that all connections will share
 	socketPath := l.socketPath
 
-	// Build remote address for the tunnel
-	// The tunnel forwards <localPort> to remote's 22
+	// Build ssh command for tunnel
 	args := []string{
 		"-N",
 		"-L", fmt.Sprintf("127.0.0.1:%d:localhost:22", l.localPort),
-		"-M",                    // Master mode
+		"-M",
 		"-o", "ControlMaster=auto",
 		"-o", fmt.Sprintf("ControlPath=%s", socketPath),
 		"-o", "ControlPersist=600",
@@ -44,9 +84,12 @@ func (l *Listener) Start() error {
 		"-o", "ServerAliveCountMax=3",
 	}
 
-	log.Printf("Starting SSH tunnel to remote")
+	// Find ssh binary and print command
+	sshPath := findSSHBinary()
+	cmdStr := sshPath + " " + strings.Join(args, " ")
+	log.Printf("Executing SSH tunnel command: %s", cmdStr)
 
-	cmd := exec.Command("ssh", args...)
+	cmd := exec.Command(sshPath, args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
@@ -54,10 +97,7 @@ func (l *Listener) Start() error {
 		return fmt.Errorf("failed to start SSH tunnel: %v", err)
 	}
 
-	// The tunnel is now listening on l.localPort
-	// All connections to this port go through the same SSH connection
-
-	// Also start a TCP listener for non-SSH clients that want to connect through the tunnel
+	// Start TCP listener
 	listener, err := net.Listen("tcp", l.addr)
 	if err != nil {
 		cmd.Process.Kill()
@@ -87,10 +127,5 @@ func (l *Listener) Start() error {
 
 func (l *Listener) handleConnection(conn net.Conn) {
 	defer conn.Close()
-
-	// The connection is already being forwarded through the SSH tunnel
-	// because we created the tunnel with -L 127.0.0.1:<localPort>:localhost:22
-	// The SSH tunnel handles all the forwarding internally
-
 	log.Printf("Connection forwarded through SSH tunnel")
 }

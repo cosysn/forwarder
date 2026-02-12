@@ -16,9 +16,50 @@ type Client struct {
 	socketPath string
 }
 
+// findSSHBinary finds the ssh executable path on Windows
+func findSSHBinary() string {
+	// Check SSH_CLIENT_SSH environment variable
+	if sshPath := os.Getenv("SSH_CLIENT_SSH"); sshPath != "" {
+		return sshPath
+	}
+
+	// Try Windows OpenSSH (installed via settings or optional feature)
+	paths := []string{
+		filepath.Join(os.Getenv("SystemRoot"), "System32", "OpenSSH", "ssh.exe"),
+		filepath.Join(os.Getenv("ProgramFiles"), "OpenSSH", "ssh.exe"),
+		filepath.Join(os.Getenv("ProgramFiles(x86)"), "OpenSSH", "ssh.exe"),
+		"C:\\Windows\\System32\\OpenSSH\\ssh.exe",
+	}
+
+	for _, p := range paths {
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+
+	// Try Git for Windows SSH
+	gitPaths := []string{
+		filepath.Join(os.Getenv("ProgramFiles"), "Git", "usr", "bin", "ssh.exe"),
+		filepath.Join(os.Getenv("ProgramFiles(x86)"), "Git", "usr", "bin", "ssh.exe"),
+	}
+
+	for _, p := range gitPaths {
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+
+	// Fall back to PATH lookup
+	path, err := exec.LookPath("ssh.exe")
+	if err != nil {
+		log.Fatalf("ssh.exe not found in PATH: %v", err)
+	}
+	return path
+}
+
 func NewClient(remoteHost string, remotePort, localPort int, username, password string) (*Client, error) {
 	// Create socket directory
-	socketDir := filepath.Join(os.TempDir(), "ssh-forwarder")
+	socketDir := filepath.Join(os.Getenv("TEMP"), "ssh-forwarder")
 	os.MkdirAll(socketDir, 0700)
 	socketPath := filepath.Join(socketDir, fmt.Sprintf("%s_%d",
 		strings.ReplaceAll(remoteHost, ":", "_"),
@@ -48,9 +89,12 @@ func NewClient(remoteHost string, remotePort, localPort int, username, password 
 	}
 	args = append(args, addr)
 
-	log.Printf("Starting SSH master connection to %s", addr)
+	// Find ssh binary
+	sshPath := findSSHBinary()
+	cmdStr := sshPath + " " + strings.Join(args, " ")
+	log.Printf("Executing SSH command: %s", cmdStr)
 
-	cmd := exec.Command("ssh", args...)
+	cmd := exec.Command(sshPath, args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 

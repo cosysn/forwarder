@@ -17,6 +17,34 @@ type Client struct {
 	socketPath string
 }
 
+// findSSHBinary finds the ssh executable path
+func findSSHBinary() string {
+	// Check SSH_CLIENT_SSH first (common in containers/CI)
+	if sshPath := os.Getenv("SSH_CLIENT_SSH"); sshPath != "" {
+		return sshPath
+	}
+
+	// Try common paths
+	paths := []string{
+		"/usr/bin/ssh",
+		"/usr/local/bin/ssh",
+		"/bin/ssh",
+	}
+
+	for _, p := range paths {
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+
+	// Fall back to PATH lookup
+	path, err := exec.LookPath("ssh")
+	if err != nil {
+		log.Fatalf("ssh not found in PATH: %v", err)
+	}
+	return path
+}
+
 func NewClient(remoteHost string, remotePort, localPort int, username, password string) (*Client, error) {
 	// Create socket directory
 	socketDir := filepath.Join(os.TempDir(), "ssh-forwarder")
@@ -49,9 +77,12 @@ func NewClient(remoteHost string, remotePort, localPort int, username, password 
 	}
 	args = append(args, addr)
 
-	log.Printf("Starting SSH master connection to %s", addr)
+	// Find ssh binary
+	sshPath := findSSHBinary()
+	cmdStr := sshPath + " " + strings.Join(args, " ")
+	log.Printf("Executing SSH command: %s", cmdStr)
 
-	cmd := exec.Command("ssh", args...)
+	cmd := exec.Command(sshPath, args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 

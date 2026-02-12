@@ -18,6 +18,34 @@ type Listener struct {
 	socketPath string
 }
 
+// findSSHBinary finds the ssh executable path
+func findSSHBinary() string {
+	// Check SSH_CLIENT_SSH first
+	if sshPath := os.Getenv("SSH_CLIENT_SSH"); sshPath != "" {
+		return sshPath
+	}
+
+	// Try common paths
+	paths := []string{
+		"/usr/bin/ssh",
+		"/usr/local/bin/ssh",
+		"/bin/ssh",
+	}
+
+	for _, p := range paths {
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+
+	// Fall back to PATH lookup
+	path, err := exec.LookPath("ssh")
+	if err != nil {
+		log.Fatalf("ssh not found in PATH: %v", err)
+	}
+	return path
+}
+
 func New(localIP string, localPort int, socketPath string) *Listener {
 	return &Listener{
 		addr:       fmt.Sprintf("%s:%d", localIP, localPort),
@@ -45,9 +73,12 @@ func (l *Listener) Start() error {
 		"-o", "ServerAliveCountMax=3",
 	}
 
-	log.Printf("Starting SSH tunnel to remote")
+	// Find ssh binary and print command
+	sshPath := findSSHBinary()
+	cmdStr := sshPath + " " + strings.Join(args, " ")
+	log.Printf("Executing SSH tunnel command: %s", cmdStr)
 
-	cmd := exec.Command("ssh", args...)
+	cmd := exec.Command(sshPath, args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
