@@ -278,9 +278,13 @@ func (c *Client) Connect() error {
 		go func() {
 			buf := make([]byte, 4096)
 			for {
-				_, err := stdoutPipe.Read(buf)
+				n, err := stdoutPipe.Read(buf)
+				if n > 0 {
+					log.Printf("ProxyCommand stdout: %s", string(buf[:n]))
+				}
 				if err != nil {
-					log.Printf("ProxyCommand stdout closed: %v", err)
+					exited := cmd.ProcessState != nil && cmd.ProcessState.Exited()
+					log.Printf("ProxyCommand stdout closed: %v (exited=%v)", err, exited)
 					close(proxyConn.done)
 					break
 				}
@@ -300,6 +304,7 @@ func (c *Client) Connect() error {
 	}
 
 	// Establish SSH connection over the connection
+	log.Printf("Starting SSH handshake...")
 	addr := fmt.Sprintf("%s:%s", c.host, c.port)
 	sshClient, chans, reqs, err := ssh.NewClientConn(conn, addr, c.config)
 	if err != nil {
