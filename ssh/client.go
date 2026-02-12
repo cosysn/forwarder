@@ -271,6 +271,9 @@ func (c *Client) Connect() error {
 		if err := cmd.Start(); err != nil {
 			return fmt.Errorf("failed to start ProxyCommand: %v", err)
 		}
+
+		// Give ProxyCommand time to start up
+		time.Sleep(500 * time.Millisecond)
 		log.Printf("ProxyCommand started")
 	} else {
 		// Direct TCP connection
