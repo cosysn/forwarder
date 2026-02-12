@@ -227,28 +227,12 @@ func (c *Client) Connect() error {
 
 		cmd.Stdin = stdinReader   // Command reads from stdinReader
 		cmd.Stdout = stdoutWriter // Command writes to stdoutWriter
-
-		// Capture stderr - read asynchronously to prevent blocking
-		stderrReader, stderrWriter := io.Pipe()
-		cmd.Stderr = stderrWriter
-
-		// Goroutine to read stderr and log
-		go func() {
-			var stderrBuf bytes.Buffer
-			io.Copy(&stderrBuf, stderrReader)
-			stderrReader.Close()
-			if stderrBuf.Len() > 0 {
-				log.Printf("ProxyCommand stderr: %s", stderrBuf.String())
-			}
-		}()
+		cmd.Stderr = os.Stderr    // Let stderr go to our stderr
 
 		// Start the command
 		if err := cmd.Start(); err != nil {
 			return fmt.Errorf("failed to start ProxyCommand: %v", err)
 		}
-
-		// Close stderr pipe to signal EOF to the goroutine
-		stderrWriter.Close()
 
 		log.Printf("ProxyCommand started (PID: %d)", cmd.Process.Pid)
 		c.proxyCmd = cmd
