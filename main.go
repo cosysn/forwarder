@@ -18,13 +18,19 @@ func main() {
 	log.Printf("Local: %s:%d -> Remote: %s:%d",
 		cfg.LocalIP, cfg.LocalPort, cfg.RemoteHost, cfg.RemotePort)
 
-	client, err := ssh.NewClient(cfg)
+	client, err := ssh.NewClient(
+		cfg.RemoteHost,
+		cfg.RemotePort,
+		cfg.LocalPort,
+		cfg.Username,
+		cfg.Password,
+	)
 	if err != nil {
 		log.Fatalf("Failed to connect to SSH server: %v", err)
 	}
 	defer client.Close()
 
-	l := listener.New(cfg.LocalIP, cfg.LocalPort, client.GetConn())
+	l := listener.New(cfg.LocalIP, cfg.LocalPort, client.GetSocketPath())
 
 	// Handle shutdown signals
 	sigChan := make(chan os.Signal, 1)
@@ -33,6 +39,7 @@ func main() {
 	go func() {
 		<-sigChan
 		log.Println("Received shutdown signal, closing...")
+		client.Close()
 		os.Exit(0)
 	}()
 

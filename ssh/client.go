@@ -3,66 +3,90 @@ package ssh
 import (
 	"fmt"
 	"log"
-	"sync"
-
-	"ssh-forwarder/config"
-
-	"golang.org/x/crypto/ssh"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"syscall"
 )
 
 type Client struct {
-	config   *config.Config
-	conn     *ssh.Client
-	mu       sync.RWMutex
-	channels map[string]*Channel
+	cmd        *exec.Cmd
+	socketPath string
 }
 
-type Channel struct {
-	ch         ssh.Channel
-	clientConn interface{} // net.Conn or similar
-}
+func NewClient(remoteHost string, remotePort, localPort int, username, password string) (*Client, error) {
+	// Create socket directory
+	socketDir := filepath.Join(os.TempDir(), "ssh-forwarder")
+	os.MkdirAll(socketDir, 0700)
+	socketPath := filepath.Join(socketDir, fmt.Sprintf("%s:%d",
+		strings.ReplaceAll(remoteHost, ":", "_"),
+		remotePort))
 
-func NewClient(cfg *config.Config) (*Client, error) {
-	authMethods := BuildAuthMethod(cfg.Username, cfg.Password)
-
-	sshConfig := &ssh.ClientConfig{
-		User: cfg.Username,
-	}
-	if len(authMethods) > 0 {
-		sshConfig.Auth = authMethods
-	}
-
-	addr := cfg.RemoteHost
-	if cfg.RemotePort != 0 {
-		addr = fmt.Sprintf("%s:%d", cfg.RemoteHost, cfg.RemotePort)
-	}
-
-	log.Printf("Connecting to SSH server: %s", addr)
-	conn, err := ssh.Dial("tcp", addr, sshConfig)
-	if err != nil {
-		return nil, err
+	// Build ssh command with ControlMaster for multiplexing
+	args := []string{
+		"-N",                    // Don't execute remote command
+		"-M",                    // Master mode for multiplexing
+		"-o", "ControlMaster=auto",
+		"-o", fmt.Sprintf("ControlPath=%s", socketPath),
+		"-o", "ControlPersist=600", // Persist master connection for 600s after close
+		"-o", "StrictHostKeyChecking=no",
+		"-o", "ServerAliveInterval=60",
+		"-o", "ServerAliveCountMax=3",
 	}
 
-	log.Println("Connected to SSH server")
+	// Add username if provided
+	if username != "" {
+		args = append(args, "-l", username)
+	}
+
+	// Build remote address
+	addr := remoteHost
+	if remotePort != 0 && remotePort != 22 {
+		addr = fmt.Sprintf("%s:%d", remoteHost, remotePort)
+	}
+	args = append(args, addr)
+
+	log.Printf("Starting SSH master connection to %s", addr)
+
+	cmd := exec.Command("ssh", args...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		Setpgid: true,
+		Pgid: 0,
+	}
+
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("failed to start SSH: %v", err)
+	}
+
+	// Wait for socket to be created
+	for i := 0; i < 30; i++ {
+		if _, err := os.Stat(socketPath); err == nil {
+			break
+		}
+		log.Printf("Waiting for SSH master connection...")
+	}
+
+	log.Println("SSH master connection established")
 
 	return &Client{
-		config:   cfg,
-		conn:     conn,
-		channels: make(map[string]*Channel),
+		cmd:        cmd,
+		socketPath: socketPath,
 	}, nil
 }
 
-func (c *Client) OpenChannel() (ssh.Channel, <-chan *ssh.Request, error) {
-	return c.conn.OpenChannel("session", nil)
+func (c *Client) GetSocketPath() string {
+	return c.socketPath
 }
 
 func (c *Client) Close() {
-	if c.conn != nil {
-		c.conn.Close()
-		log.Println("SSH connection closed")
+	if c.cmd != nil {
+		c.cmd.Process.Kill()
+		c.cmd.Wait()
 	}
-}
-
-func (c *Client) GetConn() *ssh.Client {
-	return c.conn
+	// Clean up socket
+	os.Remove(c.socketPath)
+	log.Println("SSH connection closed")
 }
