@@ -7,8 +7,6 @@ import (
 	"fmt"
 	"log"
 	"os/exec"
-	"runtime"
-	"strings"
 
 	"golang.org/x/sys/windows"
 )
