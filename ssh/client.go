@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -359,48 +358,6 @@ func (c *Client) Close() {
 	if c.proxyConn != nil {
 		c.proxyConn.Close()
 	}
-}
-
-// sshProxyCommand creates a connection using the given ProxyCommand string
-// This is similar to how SSH's ProxyCommand option works
-func sshProxyCommand(command string) (*proxyCmdConn, error) {
-	var cmd *exec.Cmd
-
-	if runtime.GOOS == "windows" {
-		// Parse Windows command properly - extract exe and arguments
-		// Handle quoted paths like: "d:\Program Files\Devpod\devpod-cli.exe" ssh --stdio
-		args := parseWindowsCommand(command)
-		if len(args) < 1 {
-			return nil, fmt.Errorf("empty command")
-		}
-		exe := args[0]
-		restArgs := []string{}
-		if len(args) > 1 {
-			restArgs = args[1:]
-		}
-		log.Printf("Windows: exe=%s args=%v", exe, restArgs)
-		cmd = exec.Command(exe, restArgs...)
-	} else {
-		cmd = exec.Command("sh", "-c", command)
-	}
-
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		return nil, fmt.Errorf("stdin pipe: %v", err)
-	}
-
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, fmt.Errorf("stdout pipe: %v", err)
-	}
-
-	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("start command: %v", err)
-	}
-
-	log.Printf("ProxyCommand started (PID: %d)", cmd.Process.Pid)
-
-	return newProxyCmdConn(cmd, stdin, stdout), nil
 }
 
 // parseWindowsCommand parses a Windows command string handling quoted paths
