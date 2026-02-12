@@ -57,14 +57,18 @@ func ParseSSHConfigFile(configPath string) (*SSHConfig, error) {
 			continue
 		}
 
-		// Parse line preserving quoted values (handles paths with spaces)
+		// Parse line preserving quoted values
 		parts := parseSSHConfigLine(line)
 		if len(parts) < 2 {
 			continue
 		}
 
 		key := strings.ToLower(parts[0])
-		value := strings.Join(parts[1:], " ")
+
+		// Extract value from original line to preserve quotes
+		// Find where the key ends (first word)
+		keyEnd := len(parts[0])
+		value := strings.TrimSpace(line[keyEnd:])
 
 		switch key {
 		case "host":

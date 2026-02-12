@@ -210,13 +210,11 @@ func (c *Client) Connect() error {
 		// Use ProxyCommand
 		proxyCmdStr := parseProxyCommand(proxyCommand, c.host, c.port, c.user)
 		log.Printf("Executing ProxyCommand: %s", proxyCmdStr)
-		log.Printf("ProxyCommand length: %d", len(proxyCmdStr))
 
 		var cmd *exec.Cmd
 		if runtime.GOOS == "windows" {
-			// Windows: use cmd /c with the whole command as argument
+			// Windows: use cmd /c with the whole command string
 			cmd = exec.Command("cmd", "/c", proxyCmdStr)
-			log.Printf("Windows cmd command constructed")
 		} else {
 			// Unix: use shell -c
 			cmd = exec.Command("sh", "-c", proxyCmdStr)
