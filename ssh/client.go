@@ -209,6 +209,10 @@ func newProxyConn(stdin io.WriteCloser, stdout io.Reader, cmd *exec.Cmd) *proxyC
 }
 
 func (p *proxyConn) Read(b []byte) (n int, err error) {
+	// Check if process is still running
+	if p.cmd.ProcessState != nil && p.cmd.ProcessState.Exited() {
+		return 0, fmt.Errorf("ProxyCommand process has exited")
+	}
 	return p.stdout.Read(b)
 }
 
@@ -217,8 +221,15 @@ func (p *proxyConn) Write(b []byte) (n int, err error) {
 }
 
 func (p *proxyConn) Close() error {
-	p.stdin.Close()
-	p.cmd.Wait()
+	// Close stdin first to signal the proxy command to exit
+	if p.stdin != nil {
+		p.stdin.Close()
+	}
+	// Wait for the process to exit
+	if p.cmd != nil && p.cmd.Process != nil {
+		p.cmd.Process.Kill()
+		p.cmd.Wait()
+	}
 	return nil
 }
 
@@ -256,6 +267,11 @@ func (c *Client) Connect() error {
 		} else {
 			cmd = exec.Command("sh", "-c", proxyCmdStr)
 		}
+
+		// Capture stderr for debugging
+		var stderr bytes.Buffer
+		cmd.Stderr = &stderr
+
 		stdinPipe, err := cmd.StdinPipe()
 		if err != nil {
 			return fmt.Errorf("failed to get stdin pipe: %v", err)
@@ -272,9 +288,10 @@ func (c *Client) Connect() error {
 			return fmt.Errorf("failed to start ProxyCommand: %v", err)
 		}
 
-		// Give ProxyCommand time to start up
-		time.Sleep(500 * time.Millisecond)
-		log.Printf("ProxyCommand started")
+		log.Printf("ProxyCommand started (PID: %d)", cmd.Process.Pid)
+
+		// Wait a bit for the proxy to establish connection
+		time.Sleep(1 * time.Second)
 	} else {
 		// Direct TCP connection
 		addr := fmt.Sprintf("%s:%s", c.host, c.port)
