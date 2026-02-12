@@ -365,8 +365,21 @@ func (c *Client) Close() {
 // This is similar to how SSH's ProxyCommand option works
 func sshProxyCommand(command string) (*proxyCmdConn, error) {
 	var cmd *exec.Cmd
+
 	if runtime.GOOS == "windows" {
-		cmd = exec.Command("cmd", "/c", command)
+		// Parse Windows command properly - extract exe and arguments
+		// Handle quoted paths like: "d:\Program Files\Devpod\devpod-cli.exe" ssh --stdio
+		args := parseWindowsCommand(command)
+		if len(args) < 1 {
+			return nil, fmt.Errorf("empty command")
+		}
+		exe := args[0]
+		restArgs := []string{}
+		if len(args) > 1 {
+			restArgs = args[1:]
+		}
+		log.Printf("Windows: exe=%s args=%v", exe, restArgs)
+		cmd = exec.Command(exe, restArgs...)
 	} else {
 		cmd = exec.Command("sh", "-c", command)
 	}
@@ -385,7 +398,34 @@ func sshProxyCommand(command string) (*proxyCmdConn, error) {
 		return nil, fmt.Errorf("start command: %v", err)
 	}
 
+	log.Printf("ProxyCommand started (PID: %d)", cmd.Process.Pid)
+
 	return newProxyCmdConn(cmd, stdin, stdout), nil
+}
+
+// parseWindowsCommand parses a Windows command string handling quoted paths
+func parseWindowsCommand(cmd string) []string {
+	var args []string
+	var current strings.Builder
+	inQuote := false
+
+	for i := 0; i < len(cmd); i++ {
+		c := cmd[i]
+		if c == '"' {
+			inQuote = !inQuote
+		} else if c == ' ' && !inQuote {
+			if current.Len() > 0 {
+				args = append(args, current.String())
+				current.Reset()
+			}
+		} else {
+			current.WriteByte(c)
+		}
+	}
+	if current.Len() > 0 {
+		args = append(args, current.String())
+	}
+	return args
 }
 
 // proxyCmdConn implements net.Conn for ProxyCommand
