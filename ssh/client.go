@@ -201,7 +201,6 @@ func (c *Client) Connect() error {
 	sshConfig, _ := ParseSSHConfig()
 	if sshConfig != nil {
 		proxyCommand = sshConfig.GetProxyCommand(c.host)
-		log.Printf("Raw ProxyCommand from config: %q", proxyCommand)
 	}
 
 	var conn net.Conn
@@ -210,54 +209,55 @@ func (c *Client) Connect() error {
 	if proxyCommand != "" {
 		// Use ProxyCommand
 		proxyCmdStr := parseProxyCommand(proxyCommand, c.host, c.port, c.user)
-		log.Printf("Parsed ProxyCommand: %q", proxyCmdStr)
 		log.Printf("Executing ProxyCommand: %s", proxyCmdStr)
 
 		var cmd *exec.Cmd
 		if runtime.GOOS == "windows" {
-			// Windows: use cmd /c with the whole command string
 			cmd = exec.Command("cmd", "/c", proxyCmdStr)
 		} else {
-			// Unix: use shell -c
 			cmd = exec.Command("sh", "-c", proxyCmdStr)
 		}
 
-		// Create pipes for bidirectional communication
-		// stdinReader: command reads from it, we write to stdinWriter
-		// stdoutWriter: command writes to it, we read from stdoutReader
-		stdinReader, stdinWriter := io.Pipe()
-		stdoutReader, stdoutWriter := io.Pipe()
-
-		cmd.Stdin = stdinReader   // Command reads from stdinReader
-		cmd.Stdout = stdoutWriter // Command writes to stdoutWriter
-		cmd.Stderr = os.Stderr    // Let stderr go to our stderr
+		// Use StdinPipe/StdoutPipe for proper subprocess communication
+		stdinPipe, err := cmd.StdinPipe()
+		if err != nil {
+			return fmt.Errorf("failed to get stdin pipe: %v", err)
+		}
+		stdoutPipe, err := cmd.StdoutPipe()
+		if err != nil {
+			return fmt.Errorf("failed to get stdout pipe: %v", err)
+		}
 
 		// Start the command
 		if err := cmd.Start(); err != nil {
-			return fmt.Errorf("failed to start ProxyCommand: %v (command: %s)", err, proxyCmdStr)
+			return fmt.Errorf("failed to start ProxyCommand: %v", err)
 		}
 
 		log.Printf("ProxyCommand started (PID: %d)", cmd.Process.Pid)
-		c.proxyCmd = cmd
 
-		// Create the proxy connection
-		c.proxyConn = &proxyConn{
-			cmd:         cmd,
-			stdinWriter: stdinWriter,
-			stdinReader: stdinReader,
-			stdoutReader: stdoutReader,
-			local:       &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0},
-			remote:      &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0},
-		}
-		conn = c.proxyConn
-
-		// Wait a bit for the connection to establish
+		// Give proxy time to establish connection
 		time.Sleep(500 * time.Millisecond)
 
 		// Check if process is still running
 		if cmd.ProcessState != nil && cmd.ProcessState.Exited() {
-			return fmt.Errorf("ProxyCommand exited prematurely")
+			return fmt.Errorf("ProxyCommand exited immediately")
 		}
+
+		c.proxyConn = newProxyConn(cmd, stdinPipe, stdoutPipe)
+		conn = c.proxyConn
+
+		// Start a goroutine to keep reading from stdout to prevent EOF
+		go func() {
+			buf := make([]byte, 4096)
+			for {
+				_, err := stdoutPipe.Read(buf)
+				if err != nil {
+					break
+				}
+			}
+		}()
+
+		log.Printf("ProxyCommand ready")
 
 	} else {
 		// Direct TCP connection
@@ -282,35 +282,56 @@ func (c *Client) Connect() error {
 	return nil
 }
 
-// proxyConn implements net.Conn using pipes
+// proxyConn implements net.Conn for ProxyCommand
 type proxyConn struct {
-	cmd         *exec.Cmd
-	stdinWriter *io.PipeWriter
-	stdinReader *io.PipeReader
-	stdoutReader *io.PipeReader
-	local       net.Addr
-	remote      net.Addr
+	cmd    *exec.Cmd
+	stdin  io.WriteCloser
+	stdout io.Reader
+	done   chan struct{}
+	local  net.Addr
+	remote net.Addr
+}
+
+func newProxyConn(cmd *exec.Cmd, stdin io.WriteCloser, stdout io.Reader) *proxyConn {
+	return &proxyConn{
+		cmd:    cmd,
+		stdin:  stdin,
+		stdout: stdout,
+		done:   make(chan struct{}),
+		local:  &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0},
+		remote: &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0},
+	}
 }
 
 func (p *proxyConn) Read(b []byte) (n int, err error) {
-	return p.stdoutReader.Read(b)
+	return p.stdout.Read(b)
 }
 
 func (p *proxyConn) Write(b []byte) (n int, err error) {
-	return p.stdinWriter.Write(b)
+	return p.stdin.Write(b)
 }
 
 func (p *proxyConn) Close() error {
-	if p.stdinWriter != nil {
-		p.stdinWriter.Close()
+	// Close stdin first
+	if p.stdin != nil {
+		p.stdin.Close()
 	}
-	if p.stdoutReader != nil {
-		p.stdoutReader.Close()
+
+	// Wait for the command to exit or timeout
+	select {
+	case <-p.done:
+	case <-time.After(5 * time.Second):
+		// Force kill if still running
+		if p.cmd.Process != nil {
+			p.cmd.Process.Kill()
+		}
 	}
+
+	// Wait for the process
 	if p.cmd.Process != nil {
-		p.cmd.Process.Kill()
+		p.cmd.Wait()
 	}
-	p.cmd.Wait()
+
 	return nil
 }
 
