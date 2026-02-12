@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -248,7 +249,13 @@ func (c *Client) Connect() error {
 		proxyCmdStr := parseProxyCommand(proxyCommand, c.host, c.port, c.user)
 		log.Printf("Executing ProxyCommand: %s", proxyCmdStr)
 
-		cmd := exec.Command("sh", "-c", proxyCmdStr)
+		// Use sh on Unix, cmd on Windows
+		var cmd *exec.Cmd
+		if runtime.GOOS == "windows" {
+			cmd = exec.Command("cmd", "/c", proxyCmdStr)
+		} else {
+			cmd = exec.Command("sh", "-c", proxyCmdStr)
+		}
 		stdinPipe, err := cmd.StdinPipe()
 		if err != nil {
 			return fmt.Errorf("failed to get stdin pipe: %v", err)
