@@ -228,15 +228,33 @@ func (c *Client) Connect() error {
 			return fmt.Errorf("failed to get stdout pipe: %v", err)
 		}
 
-		// Start the command
+		// Capture stderr
+		stderrPipe, err := cmd.StderrPipe()
+		if err != nil {
+			return fmt.Errorf("failed to get stderr pipe: %v", err)
+		}
+
+		// Start command
 		if err := cmd.Start(); err != nil {
 			return fmt.Errorf("failed to start ProxyCommand: %v", err)
 		}
 
+		// Read stderr asynchronously to prevent blocking
+		go func() {
+			buf := make([]byte, 4096)
+			for {
+				n, _ := stderrPipe.Read(buf)
+				if n == 0 {
+					break
+				}
+				log.Printf("ProxyCommand stderr: %s", string(buf[:n]))
+			}
+		}()
+
 		log.Printf("ProxyCommand started (PID: %d)", cmd.Process.Pid)
 
 		// Give proxy time to establish connection
-		time.Sleep(500 * time.Millisecond)
+		time.Sleep(2 * time.Second)
 
 		// Check if process is still running
 		if cmd.ProcessState != nil && cmd.ProcessState.Exited() {
