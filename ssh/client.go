@@ -265,7 +265,9 @@ func (c *Client) Connect() error {
 			case <-stderrDone:
 			case <-time.After(1 * time.Second):
 			}
-			return fmt.Errorf("ProxyCommand exited immediately with code: %d", cmd.ProcessState.ExitCode())
+			exitCode := cmd.ProcessState.ExitCode()
+			log.Printf("ProxyCommand exited with code: %d", exitCode)
+			return fmt.Errorf("ProxyCommand exited immediately with code: %d", exitCode)
 		}
 
 		proxyConn := newProxyConn(cmd, stdinPipe, stdoutPipe)
