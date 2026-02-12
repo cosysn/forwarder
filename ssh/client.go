@@ -210,12 +210,15 @@ func (c *Client) Connect() error {
 		// Use ProxyCommand
 		proxyCmdStr := parseProxyCommand(proxyCommand, c.host, c.port, c.user)
 		log.Printf("Executing ProxyCommand: %s", proxyCmdStr)
+		log.Printf("ProxyCommand length: %d", len(proxyCmdStr))
 
-		// Determine shell based on OS
 		var cmd *exec.Cmd
 		if runtime.GOOS == "windows" {
+			// Windows: use cmd /c with the whole command as argument
 			cmd = exec.Command("cmd", "/c", proxyCmdStr)
+			log.Printf("Windows cmd command constructed")
 		} else {
+			// Unix: use shell -c
 			cmd = exec.Command("sh", "-c", proxyCmdStr)
 		}
 
@@ -231,7 +234,7 @@ func (c *Client) Connect() error {
 
 		// Start the command
 		if err := cmd.Start(); err != nil {
-			return fmt.Errorf("failed to start ProxyCommand: %v", err)
+			return fmt.Errorf("failed to start ProxyCommand: %v (command: %s)", err, proxyCmdStr)
 		}
 
 		log.Printf("ProxyCommand started (PID: %d)", cmd.Process.Pid)
