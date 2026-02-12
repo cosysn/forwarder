@@ -91,8 +91,10 @@ func NewClient(remoteHost string, remotePort, localPort int, username, password 
 
 	// Find ssh binary
 	sshPath := findSSHBinary()
-	cmdStr := sshPath + " " + strings.Join(args, " ")
-	log.Printf("Executing SSH command: %s", cmdStr)
+
+	// Build command string for logging
+	cmdStr := fmt.Sprintf(`%s %s`, sshPath, strings.Join(args, " "))
+	log.Printf("SSH COMMAND: %s", cmdStr)
 
 	cmd := exec.Command(sshPath, args...)
 	cmd.Stdout = os.Stdout

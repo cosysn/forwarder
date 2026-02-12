@@ -86,8 +86,8 @@ func (l *Listener) Start() error {
 
 	// Find ssh binary and print command
 	sshPath := findSSHBinary()
-	cmdStr := sshPath + " " + strings.Join(args, " ")
-	log.Printf("Executing SSH tunnel command: %s", cmdStr)
+	cmdStr := fmt.Sprintf(`%s %s`, sshPath, strings.Join(args, " "))
+	log.Printf("SSH TUNNEL COMMAND: %s", cmdStr)
 
 	cmd := exec.Command(sshPath, args...)
 	cmd.Stdout = os.Stdout
