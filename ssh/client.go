@@ -201,6 +201,7 @@ func (c *Client) Connect() error {
 	sshConfig, _ := ParseSSHConfig()
 	if sshConfig != nil {
 		proxyCommand = sshConfig.GetProxyCommand(c.host)
+		log.Printf("Raw ProxyCommand from config: %q", proxyCommand)
 	}
 
 	var conn net.Conn
@@ -209,6 +210,7 @@ func (c *Client) Connect() error {
 	if proxyCommand != "" {
 		// Use ProxyCommand
 		proxyCmdStr := parseProxyCommand(proxyCommand, c.host, c.port, c.user)
+		log.Printf("Parsed ProxyCommand: %q", proxyCmdStr)
 		log.Printf("Executing ProxyCommand: %s", proxyCmdStr)
 
 		var cmd *exec.Cmd
