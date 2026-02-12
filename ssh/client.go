@@ -240,19 +240,20 @@ func (c *Client) Connect() error {
 		log.Printf("ProxyCommand started (PID: %d)", proxyCmd.Process.Pid)
 
 		// Read stderr asynchronously to capture any errors
-		stderrDone := make(chan bool, 1)
+		stderrBuf := bytes.Buffer{}
 		go func() {
 			buf := make([]byte, 4096)
 			for {
 				n, err := stderrPipe.Read(buf)
 				if n > 0 {
-					log.Printf("ProxyCommand stderr: %s", string(buf[:n]))
+					text := string(buf[:n])
+					stderrBuf.WriteString(text)
+					log.Printf("ProxyCommand stderr: %s", text)
 				}
 				if err != nil {
 					break
 				}
 			}
-			stderrDone <- true
 		}()
 
 		// Give proxy time to establish connection
@@ -260,11 +261,7 @@ func (c *Client) Connect() error {
 
 		// Check if process is still running
 		if proxyCmd.ProcessState != nil && proxyCmd.ProcessState.Exited() {
-			// Wait for stderr to be read
-			select {
-			case <-stderrDone:
-			case <-time.After(1 * time.Second):
-			}
+			time.Sleep(100 * time.Millisecond) // Wait for stderr to be read
 			exitCode := proxyCmd.ProcessState.ExitCode()
 			log.Printf("ProxyCommand exited with code: %d", exitCode)
 			return fmt.Errorf("ProxyCommand exited immediately with code: %d", exitCode)
