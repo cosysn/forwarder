@@ -205,39 +205,39 @@ func (c *Client) Connect() error {
 
 	var conn net.Conn
 	var err error
+	var proxyCmd *exec.Cmd
 
 	if proxyCommand != "" {
 		// Use ProxyCommand
 		proxyCmdStr := parseProxyCommand(proxyCommand, c.host, c.port, c.user)
 		log.Printf("Executing ProxyCommand: %s", proxyCmdStr)
 
-		var cmd *exec.Cmd
 		if runtime.GOOS == "windows" {
-			cmd = exec.Command("cmd", "/c", proxyCmdStr)
+			proxyCmd = exec.Command("cmd", "/c", proxyCmdStr)
 		} else {
-			cmd = exec.Command("sh", "-c", proxyCmdStr)
+			proxyCmd = exec.Command("sh", "-c", proxyCmdStr)
 		}
 
 		// Use StdinPipe/StdoutPipe for proper subprocess communication
-		stdinPipe, err := cmd.StdinPipe()
+		stdinPipe, err := proxyCmd.StdinPipe()
 		if err != nil {
 			return fmt.Errorf("failed to get stdin pipe: %v", err)
 		}
-		stdoutPipe, err := cmd.StdoutPipe()
+		stdoutPipe, err := proxyCmd.StdoutPipe()
 		if err != nil {
 			return fmt.Errorf("failed to get stdout pipe: %v", err)
 		}
-		stderrPipe, err := cmd.StderrPipe()
+		stderrPipe, err := proxyCmd.StderrPipe()
 		if err != nil {
 			return fmt.Errorf("failed to get stderr pipe: %v", err)
 		}
 
 		// Start command
-		if err := cmd.Start(); err != nil {
+		if err := proxyCmd.Start(); err != nil {
 			return fmt.Errorf("failed to start ProxyCommand: %v", err)
 		}
 
-		log.Printf("ProxyCommand started (PID: %d)", cmd.Process.Pid)
+		log.Printf("ProxyCommand started (PID: %d)", proxyCmd.Process.Pid)
 
 		// Read stderr asynchronously to capture any errors
 		stderrDone := make(chan bool, 1)
@@ -259,18 +259,18 @@ func (c *Client) Connect() error {
 		time.Sleep(2 * time.Second)
 
 		// Check if process is still running
-		if cmd.ProcessState != nil && cmd.ProcessState.Exited() {
+		if proxyCmd.ProcessState != nil && proxyCmd.ProcessState.Exited() {
 			// Wait for stderr to be read
 			select {
 			case <-stderrDone:
 			case <-time.After(1 * time.Second):
 			}
-			exitCode := cmd.ProcessState.ExitCode()
+			exitCode := proxyCmd.ProcessState.ExitCode()
 			log.Printf("ProxyCommand exited with code: %d", exitCode)
 			return fmt.Errorf("ProxyCommand exited immediately with code: %d", exitCode)
 		}
 
-		proxyConn := newProxyConn(cmd, stdinPipe, stdoutPipe)
+		proxyConn := newProxyConn(proxyCmd, stdinPipe, stdoutPipe)
 		c.proxyConn = proxyConn
 		conn = proxyConn
 
@@ -283,7 +283,7 @@ func (c *Client) Connect() error {
 					log.Printf("ProxyCommand stdout: %s", string(buf[:n]))
 				}
 				if err != nil {
-					exited := cmd.ProcessState != nil && cmd.ProcessState.Exited()
+					exited := proxyCmd.ProcessState != nil && proxyCmd.ProcessState.Exited()
 					log.Printf("ProxyCommand stdout closed: %v (exited=%v)", err, exited)
 					close(proxyConn.done)
 					break
@@ -313,12 +313,16 @@ func (c *Client) Connect() error {
 	resultChan := make(chan connResult, 1)
 
 	go func() {
+		log.Printf("goroutine: starting NewClientConn...")
 		addr := fmt.Sprintf("%s:%s", c.host, c.port)
+		log.Printf("goroutine: dialing %s...", addr)
 		sshClient, chans, reqs, err := ssh.NewClientConn(conn, addr, c.config)
 		if err != nil {
+			log.Printf("goroutine: NewClientConn error: %v", err)
 			resultChan <- connResult{err: err}
 			return
 		}
+		log.Printf("goroutine: NewClientConn success, creating client...")
 		resultChan <- connResult{client: ssh.NewClient(sshClient, chans, reqs)}
 	}()
 
@@ -330,6 +334,12 @@ func (c *Client) Connect() error {
 		c.client = r.client
 		log.Printf("SSH connection established!")
 	case <-time.After(30 * time.Second):
+		log.Printf("TIMEOUT: handshake hung for 30s, checking process state...")
+		if proxyCmd != nil && proxyCmd.ProcessState != nil {
+			log.Printf("Process exited with code: %d", proxyCmd.ProcessState.ExitCode())
+		} else {
+			log.Printf("Process still running or no ProxyCommand")
+		}
 		return fmt.Errorf("SSH handshake timed out after 30s")
 	}
 
