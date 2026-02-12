@@ -304,15 +304,34 @@ func (c *Client) Connect() error {
 	}
 
 	// Establish SSH connection over the connection
-	log.Printf("Starting SSH handshake...")
-	addr := fmt.Sprintf("%s:%s", c.host, c.port)
-	sshClient, chans, reqs, err := ssh.NewClientConn(conn, addr, c.config)
-	if err != nil {
-		return fmt.Errorf("failed to establish SSH connection: %v", err)
-	}
+	log.Printf("Starting SSH handshake to %s:%s...", c.host, c.port)
 
-	c.client = ssh.NewClient(sshClient, chans, reqs)
-	log.Printf("SSH connection established")
+	type connResult struct {
+		client *ssh.Client
+		err    error
+	}
+	resultChan := make(chan connResult, 1)
+
+	go func() {
+		addr := fmt.Sprintf("%s:%s", c.host, c.port)
+		sshClient, chans, reqs, err := ssh.NewClientConn(conn, addr, c.config)
+		if err != nil {
+			resultChan <- connResult{err: err}
+			return
+		}
+		resultChan <- connResult{client: ssh.NewClient(sshClient, chans, reqs)}
+	}()
+
+	select {
+	case r := <-resultChan:
+		if r.err != nil {
+			return fmt.Errorf("failed to establish SSH connection: %v", r.err)
+		}
+		c.client = r.client
+		log.Printf("SSH connection established!")
+	case <-time.After(30 * time.Second):
+		return fmt.Errorf("SSH handshake timed out after 30s")
+	}
 
 	return nil
 }
