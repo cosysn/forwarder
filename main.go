@@ -27,11 +27,16 @@ func main() {
 		cfg.Password,
 	)
 	if err != nil {
-		log.Fatalf("Failed to connect to SSH server: %v", err)
+		log.Fatalf("Failed to create SSH client: %v", err)
 	}
 	defer client.Close()
 
-	l := listener.New(cfg.LocalIP, cfg.LocalPort, client.GetSocketPath())
+	// Connect to SSH server
+	if err := client.Connect(); err != nil {
+		log.Fatalf("Failed to connect to SSH server: %v", err)
+	}
+
+	l := listener.New(cfg.LocalIP, cfg.LocalPort, client.GetClient())
 
 	// Handle shutdown signals
 	sigChan := make(chan os.Signal, 1)
