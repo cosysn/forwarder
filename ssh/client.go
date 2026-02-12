@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -216,6 +217,10 @@ func (c *Client) Connect() error {
 			proxyCmd = exec.Command("cmd", "/c", proxyCmdStr)
 		} else {
 			proxyCmd = exec.Command("sh", "-c", proxyCmdStr)
+			// Make subprocess think it's in a terminal
+			proxyCmd.SysProcAttr = &syscall.SysProcAttr{
+				Setpgid: true,
+			}
 		}
 
 		// Use StdinPipe/StdoutPipe for proper subprocess communication
