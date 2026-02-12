@@ -52,7 +52,7 @@ func NewClient(cfg *config.Config) (*Client, error) {
 	}, nil
 }
 
-func (c *Client) OpenChannel() (ssh.Channel, error) {
+func (c *Client) OpenChannel() (ssh.Channel, <-chan *ssh.Request, error) {
 	return c.conn.OpenChannel("session", nil)
 }
 

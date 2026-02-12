@@ -50,12 +50,20 @@ func (l *Listener) Start() error {
 func (l *Listener) handleConnection(conn net.Conn) {
 	defer conn.Close()
 
-	ch, err := l.client.OpenChannel()
+	ch, requests, err := l.client.OpenChannel("session", nil)
 	if err != nil {
 		log.Printf("Failed to open SSH channel: %v", err)
 		return
 	}
 	defer ch.Close()
+
+	// Handle SSH requests in background
+	go func() {
+		for req := range requests {
+			log.Printf("Received SSH request: %s", req.Type)
+			req.Reply(true, nil)
+		}
+	}()
 
 	log.Printf("SSH channel opened, starting forward")
 

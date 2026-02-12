@@ -24,7 +24,7 @@ func main() {
 	}
 	defer client.Close()
 
-	l := listener.New(cfg.LocalIP, cfg.LocalPort, client)
+	l := listener.New(cfg.LocalIP, cfg.LocalPort, client.GetConn())
 
 	// Handle shutdown signals
 	sigChan := make(chan os.Signal, 1)
