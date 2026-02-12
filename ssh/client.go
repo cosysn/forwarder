@@ -190,66 +190,6 @@ func parseProxyCommand(cmd, host, port, user string) string {
 	return cmd
 }
 
-// proxyConn implements net.Conn for ProxyCommand
-type proxyConn struct {
-	cmd      *exec.Cmd
-	stdin    io.WriteCloser
-	stdout   io.Reader
-	stderr   io.ReadCloser
-	done     chan struct{}
-	local    net.Addr
-	remote   net.Addr
-}
-
-func newProxyConn(cmd *exec.Cmd, stdin io.WriteCloser, stdout io.Reader) *proxyConn {
-	return &proxyConn{
-		cmd:    cmd,
-		stdin:  stdin,
-		stdout: stdout,
-		done:   make(chan struct{}),
-		local:  &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0},
-		remote: &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0},
-	}
-}
-
-func (p *proxyConn) Read(b []byte) (n int, err error) {
-	return p.stdout.Read(b)
-}
-
-func (p *proxyConn) Write(b []byte) (n int, err error) {
-	return p.stdin.Write(b)
-}
-
-func (p *proxyConn) Close() error {
-	// Close stdin first
-	if p.stdin != nil {
-		p.stdin.Close()
-	}
-
-	// Wait for the command to exit or timeout
-	select {
-	case <-p.done:
-	case <-time.After(5 * time.Second):
-		// Force kill if still running
-		if p.cmd.Process != nil {
-			p.cmd.Process.Kill()
-		}
-	}
-
-	// Wait for the process
-	if p.cmd.Process != nil {
-		p.cmd.Wait()
-	}
-
-	return nil
-}
-
-func (p *proxyConn) LocalAddr() net.Addr  { return p.local }
-func (p *proxyConn) RemoteAddr() net.Addr { return p.remote }
-func (p *proxyConn) SetDeadline(t time.Time) error   { return nil }
-func (p *proxyConn) SetReadDeadline(t time.Time) error  { return nil }
-func (p *proxyConn) SetWriteDeadline(t time.Time) error { return nil }
-
 // Connect establishes the SSH connection, using ProxyCommand if configured
 func (c *Client) Connect() error {
 	if c.client != nil {
@@ -279,48 +219,59 @@ func (c *Client) Connect() error {
 			cmd = exec.Command("sh", "-c", proxyCmdStr)
 		}
 
-		// Create pipes for communication with ProxyCommand
-		stdinPipe, err := cmd.StdinPipe()
-		if err != nil {
-			return fmt.Errorf("failed to get stdin pipe: %v", err)
-		}
-		stdoutPipe, err := cmd.StdoutPipe()
-		if err != nil {
-			return fmt.Errorf("failed to get stdout pipe: %v", err)
-		}
+		// Create pipes for bidirectional communication
+		// stdinReader: command reads from it, we write to stdinWriter
+		// stdoutWriter: command writes to it, we read from stdoutReader
+		stdinReader, stdinWriter := io.Pipe()
+		stdoutReader, stdoutWriter := io.Pipe()
+
+		cmd.Stdin = stdinReader   // Command reads from stdinReader
+		cmd.Stdout = stdoutWriter // Command writes to stdoutWriter
+
+		// Capture stderr - read asynchronously to prevent blocking
+		stderrReader, stderrWriter := io.Pipe()
+		cmd.Stderr = stderrWriter
+
+		// Goroutine to read stderr and log
+		go func() {
+			var stderrBuf bytes.Buffer
+			io.Copy(&stderrBuf, stderrReader)
+			stderrReader.Close()
+			if stderrBuf.Len() > 0 {
+				log.Printf("ProxyCommand stderr: %s", stderrBuf.String())
+			}
+		}()
 
 		// Start the command
 		if err := cmd.Start(); err != nil {
 			return fmt.Errorf("failed to start ProxyCommand: %v", err)
 		}
 
-		log.Printf("ProxyCommand started (PID: %d)", cmd.Process.Pid)
+		// Close stderr pipe to signal EOF to the goroutine
+		stderrWriter.Close()
 
-		// Give proxy time to establish connection
+		log.Printf("ProxyCommand started (PID: %d)", cmd.Process.Pid)
+		c.proxyCmd = cmd
+
+		// Create the proxy connection
+		c.proxyConn = &proxyConn{
+			cmd:         cmd,
+			stdinWriter: stdinWriter,
+			stdinReader: stdinReader,
+			stdoutReader: stdoutReader,
+			local:       &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0},
+			remote:      &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0},
+		}
+		conn = c.proxyConn
+
+		// Wait a bit for the connection to establish
 		time.Sleep(500 * time.Millisecond)
 
 		// Check if process is still running
 		if cmd.ProcessState != nil && cmd.ProcessState.Exited() {
-			return fmt.Errorf("ProxyCommand exited immediately")
+			return fmt.Errorf("ProxyCommand exited prematurely")
 		}
 
-		c.proxyConn = newProxyConn(cmd, stdinPipe, stdoutPipe)
-		conn = c.proxyConn
-
-		// Start a goroutine to keep reading from stdout to prevent EOF
-		outPipe := stdoutPipe
-		go func() {
-			buf := make([]byte, 4096)
-			for {
-				_, err := outPipe.Read(buf)
-				if err != nil {
-					break
-				}
-				// Optionally log or discard
-			}
-		}()
-
-		log.Printf("ProxyCommand ready")
 	} else {
 		// Direct TCP connection
 		addr := fmt.Sprintf("%s:%s", c.host, c.port)
@@ -343,6 +294,44 @@ func (c *Client) Connect() error {
 
 	return nil
 }
+
+// proxyConn implements net.Conn using pipes
+type proxyConn struct {
+	cmd         *exec.Cmd
+	stdinWriter *io.PipeWriter
+	stdinReader *io.PipeReader
+	stdoutReader *io.PipeReader
+	local       net.Addr
+	remote      net.Addr
+}
+
+func (p *proxyConn) Read(b []byte) (n int, err error) {
+	return p.stdoutReader.Read(b)
+}
+
+func (p *proxyConn) Write(b []byte) (n int, err error) {
+	return p.stdinWriter.Write(b)
+}
+
+func (p *proxyConn) Close() error {
+	if p.stdinWriter != nil {
+		p.stdinWriter.Close()
+	}
+	if p.stdoutReader != nil {
+		p.stdoutReader.Close()
+	}
+	if p.cmd.Process != nil {
+		p.cmd.Process.Kill()
+	}
+	p.cmd.Wait()
+	return nil
+}
+
+func (p *proxyConn) LocalAddr() net.Addr  { return p.local }
+func (p *proxyConn) RemoteAddr() net.Addr { return p.remote }
+func (p *proxyConn) SetDeadline(t time.Time) error   { return nil }
+func (p *proxyConn) SetReadDeadline(t time.Time) error  { return nil }
+func (p *proxyConn) SetWriteDeadline(t time.Time) error { return nil }
 
 // OpenChannel opens a new SSH channel
 func (c *Client) OpenChannel() (ssh.Channel, <-chan *ssh.Request, error) {
