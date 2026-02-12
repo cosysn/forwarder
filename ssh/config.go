@@ -57,7 +57,8 @@ func ParseSSHConfigFile(configPath string) (*SSHConfig, error) {
 			continue
 		}
 
-		parts := strings.Fields(line)
+		// Parse line preserving quoted values (handles paths with spaces)
+		parts := parseSSHConfigLine(line)
 		if len(parts) < 2 {
 			continue
 		}
@@ -212,4 +213,30 @@ func TestProxyCommand(proxyCommand string) bool {
 	cmd.Stderr = &stderr
 	err := cmd.Run()
 	return err == nil && strings.Contains(stdout.String(), "test")
+}
+
+// parseSSHConfigLine parses a line preserving quoted values
+// Handles paths with spaces like: "C:\Program Files\app.exe"
+func parseSSHConfigLine(line string) []string {
+	var parts []string
+	var current strings.Builder
+	inQuote := false
+
+	for i := 0; i < len(line); i++ {
+		c := line[i]
+		if c == '"' {
+			inQuote = !inQuote
+		} else if c == ' ' && !inQuote {
+			if current.Len() > 0 {
+				parts = append(parts, current.String())
+				current.Reset()
+			}
+		} else {
+			current.WriteByte(c)
+		}
+	}
+	if current.Len() > 0 {
+		parts = append(parts, current.String())
+	}
+	return parts
 }
