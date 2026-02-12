@@ -12,9 +12,9 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
+	"github.com/creack/pty"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -209,91 +209,50 @@ func (c *Client) Connect() error {
 	var proxyCmd *exec.Cmd
 
 	if proxyCommand != "" {
-		// Use ProxyCommand
+		// Use ProxyCommand with PTY to make it interactive
 		proxyCmdStr := parseProxyCommand(proxyCommand, c.host, c.port, c.user)
-		log.Printf("Executing ProxyCommand: %s", proxyCmdStr)
+		log.Printf("Executing ProxyCommand with PTY: %s", proxyCmdStr)
 
 		if runtime.GOOS == "windows" {
 			proxyCmd = exec.Command("cmd", "/c", proxyCmdStr)
 		} else {
 			proxyCmd = exec.Command("sh", "-c", proxyCmdStr)
-			// Make subprocess think it's in a terminal
-			proxyCmd.SysProcAttr = &syscall.SysProcAttr{
-				Setpgid: true,
-			}
 		}
 
-		// Use StdinPipe/StdoutPipe for proper subprocess communication
-		stdinPipe, err := proxyCmd.StdinPipe()
+		// Create PTY for interactive terminal
+		ptyFile, ttyFile, err := pty.Open()
 		if err != nil {
-			return fmt.Errorf("failed to get stdin pipe: %v", err)
-		}
-		stdoutPipe, err := proxyCmd.StdoutPipe()
-		if err != nil {
-			return fmt.Errorf("failed to get stdout pipe: %v", err)
-		}
-		stderrPipe, err := proxyCmd.StderrPipe()
-		if err != nil {
-			return fmt.Errorf("failed to get stderr pipe: %v", err)
+			return fmt.Errorf("failed to open PTY: %v", err)
 		}
 
-		// Start command
+		proxyCmd.Stdin = ttyFile
+		proxyCmd.Stdout = ttyFile
+		proxyCmd.Stderr = ttyFile
+
 		if err := proxyCmd.Start(); err != nil {
 			return fmt.Errorf("failed to start ProxyCommand: %v", err)
 		}
 
-		log.Printf("ProxyCommand started (PID: %d)", proxyCmd.Process.Pid)
+		log.Printf("ProxyCommand started with PTY (PID: %d)", proxyCmd.Process.Pid)
 
-		// Read stderr asynchronously to capture any errors
-		stderrBuf := bytes.Buffer{}
-		go func() {
-			buf := make([]byte, 4096)
-			for {
-				n, err := stderrPipe.Read(buf)
-				if n > 0 {
-					text := string(buf[:n])
-					stderrBuf.WriteString(text)
-					log.Printf("ProxyCommand stderr: %s", text)
-				}
-				if err != nil {
-					break
-				}
-			}
-		}()
+		// Close TTY in parent - child has its own copy
+		ttyFile.Close()
 
 		// Give proxy time to establish connection
 		time.Sleep(2 * time.Second)
 
 		// Check if process is still running
 		if proxyCmd.ProcessState != nil && proxyCmd.ProcessState.Exited() {
-			time.Sleep(100 * time.Millisecond) // Wait for stderr to be read
 			exitCode := proxyCmd.ProcessState.ExitCode()
 			log.Printf("ProxyCommand exited with code: %d", exitCode)
 			return fmt.Errorf("ProxyCommand exited immediately with code: %d", exitCode)
 		}
 
-		proxyConn := newProxyConn(proxyCmd, stdinPipe, stdoutPipe)
+		proxyConn := newPtyConn(proxyCmd, ptyFile)
 		c.proxyConn = proxyConn
 		conn = proxyConn
 
-		// Start a goroutine to keep reading from stdout to prevent EOF
-		go func() {
-			buf := make([]byte, 4096)
-			for {
-				n, err := stdoutPipe.Read(buf)
-				if n > 0 {
-					log.Printf("ProxyCommand stdout: %s", string(buf[:n]))
-				}
-				if err != nil {
-					exited := proxyCmd.ProcessState != nil && proxyCmd.ProcessState.Exited()
-					log.Printf("ProxyCommand stdout closed: %v (exited=%v)", err, exited)
-					close(proxyConn.done)
-					break
-				}
-			}
-		}()
-
-		log.Printf("ProxyCommand ready")
+		log.Printf("ProxyCommand ready with PTY")
 
 	} else {
 		// Direct TCP connection
@@ -406,6 +365,50 @@ func (p *proxyConn) RemoteAddr() net.Addr { return p.remote }
 func (p *proxyConn) SetDeadline(t time.Time) error   { return nil }
 func (p *proxyConn) SetReadDeadline(t time.Time) error  { return nil }
 func (p *proxyConn) SetWriteDeadline(t time.Time) error { return nil }
+
+// ptyConn implements net.Conn using PTY for ProxyCommand
+type ptyConn struct {
+	cmd    *exec.Cmd
+	pty    *os.File
+	done   chan struct{}
+	local  net.Addr
+	remote net.Addr
+}
+
+func newPtyConn(cmd *exec.Cmd, ptyFile *os.File) *ptyConn {
+	return &ptyConn{
+		cmd:   cmd,
+		pty:   ptyFile,
+		done:  make(chan struct{}),
+		local:  &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0},
+		remote: &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0},
+	}
+}
+
+func (p *ptyConn) Read(b []byte) (n int, err error) {
+	return p.pty.Read(b)
+}
+
+func (p *ptyConn) Write(b []byte) (n int, err error) {
+	return p.pty.Write(b)
+}
+
+func (p *ptyConn) Close() error {
+	if p.pty != nil {
+		p.pty.Close()
+	}
+	if p.cmd.Process != nil {
+		p.cmd.Process.Kill()
+	}
+	p.cmd.Wait()
+	return nil
+}
+
+func (p *ptyConn) LocalAddr() net.Addr  { return p.local }
+func (p *ptyConn) RemoteAddr() net.Addr { return p.remote }
+func (p *ptyConn) SetDeadline(t time.Time) error   { return nil }
+func (p *ptyConn) SetReadDeadline(t time.Time) error  { return nil }
+func (p *ptyConn) SetWriteDeadline(t time.Time) error { return nil }
 
 // OpenChannel opens a new SSH channel
 func (c *Client) OpenChannel() (ssh.Channel, <-chan *ssh.Request, error) {
