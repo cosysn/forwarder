@@ -1,3 +1,5 @@
+//go:build windows
+
 package listener
 
 import (
@@ -7,7 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"strings"
-	"syscall"
 )
 
 type Listener struct {
@@ -48,10 +49,6 @@ func (l *Listener) Start() error {
 	cmd := exec.Command("ssh", args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Setpgid: true,
-		Pgid: 0,
-	}
 
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("failed to start SSH tunnel: %v", err)

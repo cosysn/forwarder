@@ -1,3 +1,5 @@
+//go:build windows
+
 package ssh
 
 import (
@@ -7,7 +9,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 )
 
 type Client struct {
@@ -19,7 +20,7 @@ func NewClient(remoteHost string, remotePort, localPort int, username, password 
 	// Create socket directory
 	socketDir := filepath.Join(os.TempDir(), "ssh-forwarder")
 	os.MkdirAll(socketDir, 0700)
-	socketPath := filepath.Join(socketDir, fmt.Sprintf("%s:%d",
+	socketPath := filepath.Join(socketDir, fmt.Sprintf("%s_%d",
 		strings.ReplaceAll(remoteHost, ":", "_"),
 		remotePort))
 
@@ -52,10 +53,6 @@ func NewClient(remoteHost string, remotePort, localPort int, username, password 
 	cmd := exec.Command("ssh", args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Setpgid: true,
-		Pgid: 0,
-	}
 
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("failed to start SSH: %v", err)

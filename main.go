@@ -4,6 +4,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"runtime"
 	"syscall"
 
 	"ssh-forwarder/config"
@@ -34,7 +35,13 @@ func main() {
 
 	// Handle shutdown signals
 	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
+	// Different signals for Unix and Windows
+	if runtime.GOOS == "windows" {
+		signal.Notify(sigChan, os.Interrupt)
+	} else {
+		signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	}
 
 	go func() {
 		<-sigChan
