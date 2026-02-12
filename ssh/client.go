@@ -243,16 +243,22 @@ func (c *Client) Connect() error {
 			return fmt.Errorf("ProxyCommand exited immediately")
 		}
 
-		c.proxyConn = newProxyConn(cmd, stdinPipe, stdoutPipe)
-		conn = c.proxyConn
+		proxyConn := newProxyConn(cmd, stdinPipe, stdoutPipe)
+		c.proxyConn = proxyConn
+		conn = proxyConn
 
 		// Start a goroutine to keep reading from stdout to prevent EOF
 		go func() {
 			buf := make([]byte, 4096)
 			for {
-				_, err := stdoutPipe.Read(buf)
+				n, err := stdoutPipe.Read(buf)
 				if err != nil {
+					log.Printf("ProxyCommand stdout done: %v", err)
+					close(proxyConn.done)
 					break
+				}
+				if n > 0 {
+					log.Printf("ProxyCommand stdout: %s", string(buf[:n]))
 				}
 			}
 		}()
